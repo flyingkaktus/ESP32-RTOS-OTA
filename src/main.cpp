@@ -11,7 +11,7 @@ TelnetSpy LOG;
 #endif
 
 #include "OTA.h"
-#include "credentials.h"
+#include "secrets/credentials.h"
 
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
