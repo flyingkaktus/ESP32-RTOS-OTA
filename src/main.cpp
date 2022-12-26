@@ -15,10 +15,15 @@ TelnetSpy LOG;
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include "firebase_init.h"
+#include <EEPROM.h>
 
 #define DHTPIN 2      // Pin, an den das DHT22-Modul angeschlossen ist
 #define DHTTYPE DHT22 // Typ des DHT22-Moduls
 #define LED 4
+//#define BAT 16
+#define SCK 
+#define SDA
+#define EEPROM_SIZE 12
 
 DHT dht(DHTPIN, DHTTYPE); // Erstellen eines DHT-Objekts
 uint32_t entry;
@@ -27,17 +32,28 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 unsigned long sendDataPrevMillis = 0;
-unsigned long count = 0;
+unsigned int count = 0;
 
 // NTP Servers:
 const char* ntpServer = "pool.ntp.org";
 const int timeZone = 1;
 
 unsigned int updateMes = 1; // Messinterval in Minuten
-float h = 0;
-float t = 0;
+float hum = 0;
+float temp = 0;
+uint32_t runtime0;
+uint32_t runtime1;
 unsigned int counter1;
 time_t now;
+
+void writeRuntimetoEEPROM()
+{
+  EEPROM.writeUInt(1,runtime0+runtime1);
+  delay(500);
+  EEPROM.commit();
+  DebugOut.println("EEPROM written..");
+  delay(500);
+}
 
 void vTask_LED_builtin(void *pvParameters)
 {
@@ -58,16 +74,28 @@ void vTask_RTDB_firebase(void *pvParameters)
 {
    if (Firebase.ready())
       {
+        time_t t = time(nullptr);
+        tm* timePtr = localtime(&t);
         sendDataPrevMillis = millis();
+        count++;
+        runtime1 = uint32_t(esp_timer_get_time()/1000/60/1000);
         FirebaseJson json;
         json.setDoubleDigits(3);
-        json.add("Humidity", h);
-        json.add("Temperature", t);
-        //json.add("Time: ", now);
-        //json.add("Counter", count);
-        DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, "/01 Messungen/" + String(count), &json) ? "ok" : fbdo.errorReason().c_str());
+        json.add("Humidity", hum);
+        json.add("Temperature", temp);
+        json.add("Day Minutes: ", timePtr->tm_min);
+        json.add("Day Hour: ", timePtr->tm_hour);
+        json.add("ESP32 Runtime", runtime0+runtime1);
+        for (int i = 0; i < 100; i++)
+        {
+          count++;
+          delay(250);
+          DebugOut.println(count);
+        }
+        
+        DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, "/03 Messungen/" + String(count), &json) ? "ok" : fbdo.errorReason().c_str());
         DebugOut.println(" ");
-        count++;
+        writeRuntimetoEEPROM();
     }
     delay(500);
     vTaskDelete(NULL);
@@ -78,25 +106,36 @@ void vTask_DHT_Sensor(void *pvParameters)
   for (;;)
   {
     delay(updateMes*60*1000);
-    h = dht.readHumidity();
+    hum = dht.readHumidity();
     delay(250);
-    t = dht.readTemperature();
+    temp = dht.readTemperature();
 
-    if (isnan(h) || isnan(t))
+    if (isnan(hum) || isnan(temp))
     {
       DebugOut.println("Fehler beim Auslesen der Messwerte!");
       delay(30000);
     }
 
     xTaskCreate(vTask_RTDB_firebase, "RTDB Firebase", 10000, NULL, 2, NULL);
-
-    DebugOut.print("Temp:");
-    DebugOut.print(t);
+    
+    DebugOut.print("Temp: ");
+    DebugOut.print(temp);
     DebugOut.println("°C");
-    DebugOut.print("Humid:");
-    DebugOut.print(h);
-    DebugOut.println("-----------");
-  }
+    DebugOut.print("Humid: ");
+    DebugOut.print(hum);
+    DebugOut.println("%");
+    DebugOut.print("Current Runtime (Min): ");
+    DebugOut.println(runtime1);
+    DebugOut.print("Runtime from last EEPROM (Min): ");
+    DebugOut.println(runtime0);
+    DebugOut.print("Runtime in EEPROM + now (Min): ");
+    DebugOut.println(runtime0+runtime1);
+
+    // DebugOut.print("Battery Volt: ");
+    // float sensorValue = analogRead(BAT);
+    // float voltage = sensorValue * (5.00 / 1023.00) * 2;
+    // DebugOut.println(voltage);
+   }
 }
 
 #ifdef telnet
@@ -127,20 +166,26 @@ void disconnectClientWrapper()
 
 void setup()
 {
-  dht.begin(); // Initialisierung des DHT22-Moduls
-  pinMode(LED, OUTPUT);
-
-#ifdef telnet
-  DebugOut.setWelcomeMsg(F("Welcome to the TelnetSpy example\r\n\n"));
+  #ifdef telnet
+  DebugOut.setWelcomeMsg(F("Welcome to the TelnetSpy\r\n\n"));
   DebugOut.setCallbackOnConnect(telnetConnected);
   DebugOut.setCallbackOnDisconnect(telnetDisconnected);
   DebugOut.setFilter(char(1), F("\r\nNVT command: AO\r\n"), disconnectClientWrapper);
-#endif
+  #endif
+
+  dht.begin(); // Initialisierung des DHT22-Moduls
+  pinMode(LED, OUTPUT);
+  //pinMode(BAT, INPUT);
+
+  EEPROM.begin(EEPROM_SIZE);
+  runtime0 = EEPROM.readUInt(1);
 
   DebugOut.begin(115200);
   DebugOut.println("Booting");
   setupOTA("ESP32-Cam-01", mySSID, myPASSWORD);
   configTime(3600, 0, ntpServer);
+  time_t t_start = time(nullptr);
+
   config.api_key = API_KEY_FB;
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
