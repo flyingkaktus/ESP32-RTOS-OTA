@@ -1,6 +1,7 @@
 #define ESP32_RTOS // Uncomment this line if you want to use the code with freertos only on the ESP32
                    // Has to be done before including "OTA.h"
 #define telnet     // Uncomment this line if you want non-telnet Serial.print()
+//#define NEWCHARGE
 
 #ifdef telnet
 #include <TelnetSpy.h>
@@ -11,19 +12,20 @@ TelnetSpy LOG;
 #endif
 
 #include "OTA.h"
+#include "firebase_init.h"
 #include "../secrets/credentials.h"
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
-#include "firebase_init.h"
 #include <EEPROM.h>
+#include <setjmp.h>
 
 #define DHTPIN 2      // Pin, an den das DHT22-Modul angeschlossen ist
 #define DHTTYPE DHT22 // Typ des DHT22-Moduls
-#define LED 4
+//#define LED 4
 //#define BAT 16
 #define SCK 
 #define SDA
-#define EEPROM_SIZE 12
+#define EEPROM_SIZE 64 // 64 bytes for runtime tracking 
 
 DHT dht(DHTPIN, DHTTYPE); // Erstellen eines DHT-Objekts
 uint32_t entry;
@@ -38,40 +40,50 @@ unsigned int count = 0;
 const char* ntpServer = "pool.ntp.org";
 const int timeZone = 1;
 
-unsigned int updateMes = 1; // Messinterval in Minuten
+unsigned int updateMes = 10; // Messinterval in Minuten
 float hum = 0;
 float temp = 0;
-uint32_t runtime0;
-uint32_t runtime1;
-unsigned int counter1;
+uint16_t  runtime0 = 0;
+uint16_t  runtime1 = 0;
+uint8_t eeprom_cycle = 0;
+uint16_t counter1 = 0;
 time_t now;
+uint8_t valuesteps = 2;
 
 void writeRuntimetoEEPROM()
 {
-  EEPROM.writeUInt(1,runtime0+runtime1);
-  delay(500);
+  EEPROM.writeShort(eeprom_cycle,runtime0+runtime1);
+  delay(250);
   EEPROM.commit();
+  delay(250);
   DebugOut.println("EEPROM written..");
-  delay(500);
+
+  if (eeprom_cycle >= EEPROM_SIZE) {
+    eeprom_cycle = 0;
+  } else {
+    eeprom_cycle+=valuesteps;
+  }
 }
 
-void vTask_LED_builtin(void *pvParameters)
-{
-  ledcAttachPin(LED, 0);
-  ledcSetup(0, 5000, 8);
-  for (;;)
-  {
-      for(int dutyCycle = 0; dutyCycle <= 125; dutyCycle++){   
-        ledcWrite(0, dutyCycle);
-        delay(30);
-      }
-      ledcWrite(0, 0);
-      delay(10000);
-  }   
-}
+// void vTask_LED_builtin(void *pvParameters)
+// {
+//   ledcAttachPin(LED, 0);
+//   ledcSetup(0, 5000, 8);
+//   for (;;)
+//   {
+//       for(int dutyCycle = 0; dutyCycle <= 125; dutyCycle++){   
+//         ledcWrite(0, dutyCycle);
+//         delay(30);
+//       }
+//       ledcWrite(0, 0);
+//       delay(10000);
+//   }   
+// }
 
 void vTask_RTDB_firebase(void *pvParameters)
 {
+   WiFi.setSleep(false);
+   delay(250);
    if (Firebase.ready())
       {
         time_t t = time(nullptr);
@@ -83,21 +95,18 @@ void vTask_RTDB_firebase(void *pvParameters)
         json.setDoubleDigits(3);
         json.add("Humidity", hum);
         json.add("Temperature", temp);
-        json.add("Day Minutes: ", timePtr->tm_min);
-        json.add("Day Hour: ", timePtr->tm_hour);
-        json.add("ESP32 Runtime", runtime0+runtime1);
-        for (int i = 0; i < 100; i++)
-        {
-          count++;
-          delay(250);
-          DebugOut.println(count);
-        }
-        
-        DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, "/03 Messungen/" + String(count), &json) ? "ok" : fbdo.errorReason().c_str());
+        json.add("Day Minutes", timePtr->tm_min);
+        json.add("Day Hour", timePtr->tm_hour);
+        json.add("ESP32 Runtime SESSION", runtime1); 
+        json.add("ESP32 Runtime EEPROM", runtime0); 
+        json.add("ESP32 Runtime COMPLETE", runtime0+runtime1);        
+        DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, "/06 Messungen/" + String(count), &json) ? "ok" : fbdo.errorReason().c_str());
         DebugOut.println(" ");
         writeRuntimetoEEPROM();
+        json.clear();
     }
-    delay(500);
+    delay(250);
+    WiFi.setSleep(true);
     vTaskDelete(NULL);
   }   
 
@@ -105,9 +114,9 @@ void vTask_DHT_Sensor(void *pvParameters)
 {
   for (;;)
   {
-    delay(updateMes*60*1000);
+    delay((updateMes)*60*1000);
     hum = dht.readHumidity();
-    delay(250);
+    delay(100);
     temp = dht.readTemperature();
 
     if (isnan(hum) || isnan(temp))
@@ -173,15 +182,16 @@ void setup()
   DebugOut.setFilter(char(1), F("\r\nNVT command: AO\r\n"), disconnectClientWrapper);
   #endif
 
+  DebugOut.begin(115200);
+  DebugOut.println("Booting");
+  
   dht.begin(); // Initialisierung des DHT22-Moduls
-  pinMode(LED, OUTPUT);
+  //pinMode(LED, OUTPUT);
   //pinMode(BAT, INPUT);
 
   EEPROM.begin(EEPROM_SIZE);
-  runtime0 = EEPROM.readUInt(1);
-
-  DebugOut.begin(115200);
-  DebugOut.println("Booting");
+  uint16_t lastruntime = 0;
+  
   setupOTA("ESP32-Cam-01", mySSID, myPASSWORD);
   configTime(3600, 0, ntpServer);
   time_t t_start = time(nullptr);
@@ -198,8 +208,34 @@ void setup()
   xTaskCreate(vTask_telnet, "vTask_telnet", 5000, NULL, 2, NULL);
 #endif
   //xTaskCreate(vTask_LED_builtin, "LED blinking..", 5000, NULL, 2, NULL);
-
   xTaskCreate(vTask_DHT_Sensor, "DHT", 10000, NULL, 2, NULL);
+
+  WiFi.setSleep(true);
+
+  #ifdef NEWCHARGE
+    for (int i = 0; i < 256; i++) {
+     EEPROM.write(i, 0);
+     delay(100);
+   }
+  EEPROM.commit();
+  #endif
+
+  try {
+  for (int i = 0; i <= EEPROM_SIZE; i+valuesteps)
+  {   
+      uint8_t lowByte = EEPROM.readByte(i);
+      delay(50);
+      uint8_t highByte = EEPROM.readByte(i + 1);
+      delay(50);
+      lastruntime = ((highByte << 8) | lowByte);
+      if (lastruntime >= runtime0) {
+        runtime0 = lastruntime;
+      }
+  }
+} catch (const std::exception& e) {
+  // code to handle the error goes here
+  DebugOut.printf(e.what());
+  }
 
 }
 
