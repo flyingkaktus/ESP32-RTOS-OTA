@@ -50,8 +50,8 @@ uint8_t eeprom_cycle = 0;
 uint16_t counter1 = 0;
 time_t now;
 uint8_t valuesteps = 2;
-std::string result;
-std::stringstream DB_branch_stream;
+
+String result = "000-00-00";
 
 void writeRuntimetoEEPROM()
 {
@@ -97,10 +97,9 @@ void vTask_RTDB_firebase(void *pvParameters)
   {
     time_t t = time(nullptr);
     tm *timePtr = localtime(&t);
-    sendDataPrevMillis = millis();
-    std::stringstream DB_branch_stream_2;
-    count++;
 
+    count++;
+    String pathToWrite;
     FirebaseJson json;
     json.setDoubleDigits(3);
     json.add("Humidity", hum);
@@ -111,20 +110,19 @@ void vTask_RTDB_firebase(void *pvParameters)
     json.add("ESP32 Runtime EEPROM", runtime0);
     json.add("ESP32 Runtime COMPLETE", runtime0 + runtime1);
 
-    DB_branch_stream_2 << "/" << result.c_str() << "/" << count;
-    std::string c_str_result_string = DB_branch_stream_2.str();
+    pathToWrite = result + String("/") + String(count);
 
-    DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, String(c_str_result_string.c_str()), &json) ? "ok" : fbdo.errorReason().c_str());
+    DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, pathToWrite, &json) ? "ok" : fbdo.errorReason().c_str());
 
     if (fbdo.httpCode() >= 400)
     {
       DebugOut.println("Es trat ein Fehler auf. Der Token wird erneuert.");
-      DebugOut.println(String(c_str_result_string.c_str()));
+      DebugOut.println(pathToWrite);
       Firebase.refreshToken(&config);
-      DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, String(c_str_result_string.c_str()), &json) ? "ok" : fbdo.errorReason().c_str());
+      DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, pathToWrite, &json) ? "ok" : fbdo.errorReason().c_str());
     }
 
-    DebugOut.println(" ");
+    DebugOut.println("---");
 
     writeRuntimetoEEPROM();
     json.clear();
@@ -219,13 +217,58 @@ void setup()
 
   setupOTA("ESP32-Cam-01", mySSID, myPASSWORD);
   configTime(3600, 0, ntpServer);
+  delay(10000);
   time_t t_start = time(nullptr);
+  delay(500);
   time_t t = time(nullptr);
+  delay(500);
   tm *timePtr = localtime(&t);
-  DB_branch_stream << timePtr->tm_yday << "-" << timePtr->tm_hour << "-" << timePtr->tm_min;
-  result = DB_branch_stream.str();
+  delay(500);
+  String year = "0000";
+  String yday = "000";
+  String dhour = "00";
+  String dmin = "00";
 
-  DebugOut.printf(result.c_str());
+  year = timePtr->tm_year + 1900;
+
+  if (timePtr->tm_yday < 100)
+  {
+    yday = String(0) + String(timePtr->tm_yday + 1);
+  }
+  else
+  {
+    if (timePtr->tm_yday < 10)
+    {
+      yday = String(00) + String(timePtr->tm_yday + 1);
+    }
+    else
+    {
+      yday = String(timePtr->tm_yday + 1);
+    }
+  }
+
+  if (timePtr->tm_hour < 10)
+  {
+    dhour = String(0) + String(timePtr->tm_hour);
+  }
+  else
+  {
+    dhour = String(timePtr->tm_hour);
+  }
+
+  if (timePtr->tm_min < 10)
+  {
+    dmin = String(0) + String(timePtr->tm_min);
+  }
+  else
+  {
+    dmin = String(timePtr->tm_min);
+  }
+
+  result = year + yday + dhour + dmin;
+
+  DebugOut.println(year);
+  DebugOut.println(result);
 
   config.api_key = API_KEY_FB;
   auth.user.email = USER_EMAIL;

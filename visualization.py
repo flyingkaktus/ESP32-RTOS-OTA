@@ -49,12 +49,12 @@ for child_key in reversed_child_list:
             hour = data['Day Hour']
             minute = data['Day Minutes']
 
-            # Calculate the time in hours and append it to the list
             time = hour + minute / 60
+
+            # Calculate the time in hours and append it to the list
+
             times.append(time)
-        else:
-            # Print a message if the item is None
-            print("The item is None and has no keys")
+
 
 max_value_humidities = max(humidities)
 max_value_temperatures = max(temperatures)
