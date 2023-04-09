@@ -18,7 +18,7 @@ TelnetSpy LOG;
 #include <DHT.h>
 #include <EEPROM.h>
 #include <sstream>
-#include <String>
+//#include <String>
 
 #define DHTPIN 2      // Pin, an den das DHT22-Modul angeschlossen ist
 #define DHTTYPE DHT22 // Typ des DHT22-Moduls
@@ -162,6 +162,7 @@ void vTask_DHT_Sensor(void *pvParameters)
     DebugOut.println(runtime0);
     DebugOut.print("Runtime in EEPROM + now (Min): ");
     DebugOut.println(runtime0 + runtime1);
+    
 
     // DebugOut.print("Battery Volt: ");
     // float sensorValue = analogRead(BAT);
@@ -194,6 +195,7 @@ void disconnectClientWrapper()
 {
   DebugOut.disconnectClient();
 }
+
 #endif
 
 void setup()
