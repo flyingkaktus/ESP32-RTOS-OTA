@@ -27,14 +27,12 @@
 #define EEPROM_SIZE 64 // 64 bytes for runtime tracking
 
 // Constants
-const int DHTPIN = 2;
-const int DHTTYPE = DHT22;
-const int EEPROM_SIZE = 64;
 const char *NTP_SERVER = "pool.ntp.org";
 const int TIME_ZONE = 1;
 
 // Global Variables
 DHT dht(DHTPIN, DHTTYPE);
+const int valuesteps = 2;
 unsigned long sendDataPrevMillis = 0;
 unsigned int count = 0;
 unsigned int updateInMinutes = 2;
@@ -44,6 +42,7 @@ uint16_t runtime0 = 0;
 uint16_t runtime1 = 0;
 uint8_t eeprom_cycle = 0;
 String result = "000-00-00";
+tm *timePtr;
 
 void writeRuntimetoEEPROM() {
     DebugOut.println("EEPROM writting..");
@@ -57,32 +56,33 @@ void writeRuntimetoEEPROM() {
     if (eeprom_cycle >= EEPROM_SIZE) {
         eeprom_cycle = 0;
     } else {
-        eeprom_cycle += 2;
+        eeprom_cycle += valuesteps;
     }
 }
 
-void vTask_sendToPostgresDB() {
+void vTask_sendToPostgresDB(void *pvParameters) {
     if(WiFi.status() == WL_CONNECTED) {
+      time_t t = time(nullptr);
+      timePtr = localtime(&t);
+      HTTPClient http;
 
-        HTTPClient http;
+      http.begin("http://82.165.120.229:8101/iot-entry");
+      http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-        http.begin("http://82.165.120.229:8101/iot-entry");
-        http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+      String httpRequestData = "humidity=" + String(hum) + "&temperature=" + String(temp) + "&dayMinutes=" + String(timePtr->tm_min) + "&dayHour=" + String(timePtr->tm_hour) + "&runtimeSession=" + String(runtime1) + "&runtimeEEPROM=" + String(runtime0);
 
-        String httpRequestData = "humidity=" + String(hum) + "&temperature=" + String(temp) + "&dayMinutes=" + String(timePtr->tm_min) + "&dayHour=" + String(timePtr->tm_hour) + "&runtimeSession=" + String(runtime1) + "&runtimeEEPROM=" + String(runtime0);
-
-        int httpResponseCode = http.POST(httpRequestData);
-        
-        if(httpResponseCode > 0) {
-            DebugOut.printf("HTTP Response code: %d\n", httpResponseCode);
-        }
-        else {
-            DebugOut.println("HTTP POST failed.");
-        }
-        http.end();
+      int httpResponseCode = http.POST(httpRequestData);
+      
+      if(httpResponseCode > 0) {
+        DebugOut.printf("HTTP Response code: %d\n", httpResponseCode);
+      }
+      else {
+        DebugOut.println("HTTP POST failed.");
+      }
+      http.end();
     }
     else {
-        DebugOut.println("WiFi not connected.");
+      DebugOut.println("WiFi not connected.");
     }
 }
 
@@ -115,12 +115,7 @@ void vTask_DHT_Sensor(void *pvParameters)
     DebugOut.println(runtime0);
     DebugOut.print("Runtime in EEPROM + now (Min): ");
     DebugOut.println(runtime0 + runtime1);
-    
-
-    // DebugOut.print("Battery Volt: ");
-    // float sensorValue = analogRead(BAT);
-    // float voltage = sensorValue * (5.00 / 1023.00) * 2;
-    // DebugOut.println(voltage);
+  
   }
 }
 
@@ -169,7 +164,7 @@ void setup()
   uint16_t lastruntime = 0;
 
   setupOTA("ESP32-Hygrometer", mySSID, myPASSWORD);
-  configTime(3600, 0, ntpServer);
+  configTime(3600, 0, NTP_SERVER);
   delay(10000);
   time_t t_start = time(nullptr);
   delay(500);
