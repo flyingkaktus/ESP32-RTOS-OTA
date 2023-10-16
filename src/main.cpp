@@ -3,141 +3,94 @@
 #define telnet     // Uncomment this line if you want non-telnet Serial.print()
 // #define NEWCHARGE
 
+// Conditional Includes
 #ifdef telnet
-#include <TelnetSpy.h>
-TelnetSpy LOG;
-#define DebugOut LOG
+  #include <TelnetSpy.h>
+  TelnetSpy LOG;
+  #define DebugOut LOG
 #else
-#define DebugOut Serial
+  #define DebugOut Serial
 #endif
 
 #include "OTA.h"
-#include "firebase_init.h"
+#include <HTTPClient.h>
 #include "../secrets/credentials.h"
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <EEPROM.h>
 #include <sstream>
-//#include <String>
 
 #define DHTPIN 2      // Pin, an den das DHT22-Modul angeschlossen ist
 #define DHTTYPE DHT22 // Typ des DHT22-Moduls
-// #define LED 4
-// #define BAT 16
 #define SCK
 #define SDA
 #define EEPROM_SIZE 64 // 64 bytes for runtime tracking
 
-DHT dht(DHTPIN, DHTTYPE); // Erstellen eines DHT-Objekts
-uint32_t entry;
+// Constants
+const int DHTPIN = 2;
+const int DHTTYPE = DHT22;
+const int EEPROM_SIZE = 64;
+const char *NTP_SERVER = "pool.ntp.org";
+const int TIME_ZONE = 1;
 
-FirebaseData fbdo;
-FirebaseAuth auth;
-FirebaseConfig config;
+// Global Variables
+DHT dht(DHTPIN, DHTTYPE);
 unsigned long sendDataPrevMillis = 0;
 unsigned int count = 0;
-
-// NTP Servers:
-const char *ntpServer = "pool.ntp.org";
-const int timeZone = 1;
-
-unsigned int updateMes = 2; // Messinterval in Minuten
+unsigned int updateInMinutes = 2;
 float hum = 0;
 float temp = 0;
 uint16_t runtime0 = 0;
 uint16_t runtime1 = 0;
 uint8_t eeprom_cycle = 0;
-uint16_t counter1 = 0;
-time_t now;
-uint8_t valuesteps = 2;
-
 String result = "000-00-00";
 
-void writeRuntimetoEEPROM()
-{
-  DebugOut.println("EEPROM writting..");
-  EEPROM.writeShort(eeprom_cycle, runtime0 + runtime1);
-  delay(250);
-  EEPROM.commit();
-  delay(250);
-  DebugOut.println("EEPROM written at");
-  DebugOut.println(eeprom_cycle);
+void writeRuntimetoEEPROM() {
+    DebugOut.println("EEPROM writting..");
+    EEPROM.writeShort(eeprom_cycle, runtime0 + runtime1);
+    delay(250);
+    EEPROM.commit();
+    delay(250);
+    DebugOut.println("EEPROM written at");
+    DebugOut.println(eeprom_cycle);
 
-  if (eeprom_cycle >= EEPROM_SIZE)
-  {
-    eeprom_cycle = 0;
-  }
-  else
-  {
-    eeprom_cycle += valuesteps;
-  }
+    if (eeprom_cycle >= EEPROM_SIZE) {
+        eeprom_cycle = 0;
+    } else {
+        eeprom_cycle += 2;
+    }
 }
 
-// void vTask_LED_builtin(void *pvParameters)
-// {
-//   ledcAttachPin(LED, 0);
-//   ledcSetup(0, 5000, 8);
-//   for (;;)
-//   {
-//       for(int dutyCycle = 0; dutyCycle <= 125; dutyCycle++){
-//         ledcWrite(0, dutyCycle);
-//         delay(30);
-//       }
-//       ledcWrite(0, 0);
-//       delay(10000);
-//   }
-// }
+void vTask_sendToPostgresDB() {
+    if(WiFi.status() == WL_CONNECTED) {
 
-void vTask_RTDB_firebase(void *pvParameters)
-{
-  WiFi.setSleep(false);
-  delay(250);
+        HTTPClient http;
 
-  if (Firebase.ready())
-  {
-    time_t t = time(nullptr);
-    tm *timePtr = localtime(&t);
+        http.begin("http://82.165.120.229:8101/iot-entry");
+        http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-    count++;
-    String pathToWrite;
-    FirebaseJson json;
-    json.setDoubleDigits(3);
-    json.add("Humidity", hum);
-    json.add("Temperature", temp);
-    json.add("Day Minutes", timePtr->tm_min);
-    json.add("Day Hour", timePtr->tm_hour);
-    json.add("ESP32 Runtime SESSION", runtime1);
-    json.add("ESP32 Runtime EEPROM", runtime0);
-    json.add("ESP32 Runtime COMPLETE", runtime0 + runtime1);
+        String httpRequestData = "humidity=" + String(hum) + "&temperature=" + String(temp) + "&dayMinutes=" + String(timePtr->tm_min) + "&dayHour=" + String(timePtr->tm_hour) + "&runtimeSession=" + String(runtime1) + "&runtimeEEPROM=" + String(runtime0);
 
-    pathToWrite = result + String("/") + String(count);
-
-    DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, pathToWrite, &json) ? "ok" : fbdo.errorReason().c_str());
-
-    if (fbdo.httpCode() >= 400)
-    {
-      DebugOut.println("Es trat ein Fehler auf. Der Token wird erneuert.");
-      DebugOut.println(pathToWrite);
-      Firebase.refreshToken(&config);
-      DebugOut.printf("Set json... %s\n", Firebase.RTDB.setJSON(&fbdo, pathToWrite, &json) ? "ok" : fbdo.errorReason().c_str());
+        int httpResponseCode = http.POST(httpRequestData);
+        
+        if(httpResponseCode > 0) {
+            DebugOut.printf("HTTP Response code: %d\n", httpResponseCode);
+        }
+        else {
+            DebugOut.println("HTTP POST failed.");
+        }
+        http.end();
     }
-
-    DebugOut.println("---");
-
-    writeRuntimetoEEPROM();
-    json.clear();
-  }
-
-  delay(250);
-  WiFi.setSleep(true);
-  vTaskDelete(NULL);
+    else {
+        DebugOut.println("WiFi not connected.");
+    }
 }
 
 void vTask_DHT_Sensor(void *pvParameters)
 {
   for (;;)
   {
-    delay((updateMes)*60 * 1000);
+    delay((updateInMinutes)*60 * 1000);
     hum = dht.readHumidity();
     delay(100);
     temp = dht.readTemperature();
@@ -148,7 +101,7 @@ void vTask_DHT_Sensor(void *pvParameters)
       delay(30000);
     }
     runtime1 = uint32_t(esp_timer_get_time() / 1000 / 60 / 1000);
-    xTaskCreate(vTask_RTDB_firebase, "RTDB Firebase", 10000, NULL, 2, NULL);
+    xTaskCreate(vTask_sendToPostgresDB, "sendToPostgresql", 10000, NULL, 2, NULL);
 
     DebugOut.print("Temp: ");
     DebugOut.print(temp);
@@ -211,13 +164,11 @@ void setup()
   DebugOut.println("Booting");
 
   dht.begin(); // Initialisierung des DHT22-Moduls
-  // pinMode(LED, OUTPUT);
-  // pinMode(BAT, INPUT);
 
   EEPROM.begin(EEPROM_SIZE);
   uint16_t lastruntime = 0;
 
-  setupOTA("ESP32-Cam-01", mySSID, myPASSWORD);
+  setupOTA("ESP32-Hygrometer", mySSID, myPASSWORD);
   configTime(3600, 0, ntpServer);
   delay(10000);
   time_t t_start = time(nullptr);
@@ -272,33 +223,24 @@ void setup()
   DebugOut.println(year);
   DebugOut.println(result);
 
-  config.api_key = API_KEY_FB;
-  auth.user.email = USER_EMAIL;
-  auth.user.password = USER_PASSWORD;
-  config.database_url = DB_URL_FB;
-  config.token_status_callback = tokenStatusCallback; // see addons/TokenHelper.h
+  #ifdef telnet
+    xTaskCreate(vTask_telnet, "vTask_telnet", 5000, NULL, 2, NULL);
+  #endif
 
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-
-#ifdef telnet
-  xTaskCreate(vTask_telnet, "vTask_telnet", 5000, NULL, 2, NULL);
-#endif
-  // xTaskCreate(vTask_LED_builtin, "LED blinking..", 5000, NULL, 2, NULL);
   xTaskCreate(vTask_DHT_Sensor, "DHT", 10000, NULL, 2, NULL);
 
   WiFi.setSleep(true);
 
-#ifdef NEWCHARGE
-  DebugOut.println("Start clearing EEPROM...");
-  for (int i = 0; i < EEPROM_SIZE; i++)
-  {
-    EEPROM.write(i, 0);
-    delay(100);
-  }
-  EEPROM.commit();
-  DebugOut.println("Done clearing EEPROM...");
-#endif
+  #ifdef NEWCHARGE
+    DebugOut.println("Start clearing EEPROM...");
+    for (int i = 0; i < EEPROM_SIZE; i++)
+    {
+      EEPROM.write(i, 0);
+      delay(100);
+    }
+    EEPROM.commit();
+    DebugOut.println("Done clearing EEPROM...");
+  #endif
 
   try
   {
@@ -328,15 +270,10 @@ void setup()
   }
 }
 
-void loop()
-{
-
-#if defined(ESP32_RTOS) && defined(ESP32)
-
-#else // If you do not use FreeRTOS, you have to regulary call the handle method.
-  ArduinoOTA.handle();
-  delay(1000);
+void loop() {
+    // Your main loop
+#if !defined(ESP32_RTOS) || !defined(ESP32)
+    ArduinoOTA.handle();
+    delay(1000);
 #endif
-
-  // Your code here
 }
